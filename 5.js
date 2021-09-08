@@ -98,6 +98,7 @@ class EventLog {
     eventName;
     eventId;
     callStackSizeCounter = 0;
+    static maxCallStackSize = 100;
 
     constructor(eventName, eventId) {
         this.eventName = eventName;
@@ -119,8 +120,8 @@ class EventLog {
 
     addCounter(num) {
         this.callStackSizeCounter += num;
-        if (this.callStackSizeCounter > 100) {
-            throw new Error('Maximum call stack size(100) exceeded');
+        if (this.callStackSizeCounter > EventLog.maxCallStackSize) {
+            throw new Error('Maximum call stack size('+ EventLog.maxCallStackSize + ') exceeded');
         }
     }
 }
