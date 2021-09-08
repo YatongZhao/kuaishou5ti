@@ -34,32 +34,46 @@ class Bus {
         this.beforeTriggerHooks.forEach(hook => hook({eventId, eventName, parentIdMap}));
 
         let count = events.length;
-        events.forEach((cb, cbId) => {
-            this.beforeCallbackHooks.forEach(hook => hook({eventId, cbId, eventName, cb, parentIdMap}));
-            let res = cb.call({
-                trigger: this.triggerWithId(eventId, cbId)
-            });
 
-            if (res instanceof Promise) {
-                res.catch(err => {
-                    this.afterCallbackHooks.forEach(hook => hook({eventId, cbId, eventName, cb, parentIdMap}));
-                    count--;
-
-                    if (count === 0) this.afterTriggerHooks.forEach(hook => hook({eventId, eventName, parentIdMap}));
-                    throw err;
-                }).then(data => {
-                    this.afterCallbackHooks.forEach(hook => hook({eventId, cbId, eventName, cb, parentIdMap}));
-                    count--;
-                    
-                    if (count === 0) this.afterTriggerHooks.forEach(hook => hook({eventId, eventName, parentIdMap}));
-                    return data;
+        let promise = new Promise((resolve, reject) => {
+            events.forEach((cb, cbId) => {
+                this.beforeCallbackHooks.forEach(hook => hook({eventId, cbId, eventName, cb, parentIdMap}));
+                let res = cb.call({
+                    trigger: this.triggerWithId(eventId, cbId)
                 });
-            } else {
-                count--;
-                this.afterCallbackHooks.forEach(hook => hook({eventId, cbId, eventName, cb, parentIdMap}));
-            }
+    
+                if (res instanceof Promise) {
+                    res.catch(err => {
+                        this.afterCallbackHooks.forEach(hook => hook({eventId, cbId, eventName, cb, parentIdMap}));
+                        count--;
+    
+                        if (count === 0) {
+                            this.afterTriggerHooks.forEach(hook => hook({eventId, eventName, parentIdMap}));
+                            resolve();
+                        }
+                        throw err;
+                    }).then(data => {
+                        this.afterCallbackHooks.forEach(hook => hook({eventId, cbId, eventName, cb, parentIdMap}));
+                        count--;
+                        
+                        if (count === 0) {
+                            this.afterTriggerHooks.forEach(hook => hook({eventId, eventName, parentIdMap}));
+                            resolve();
+                        }
+                        return data;
+                    });
+                } else {
+                    count--;
+                    this.afterCallbackHooks.forEach(hook => hook({eventId, cbId, eventName, cb, parentIdMap}));
+                }
+            });
         });
-        if (count === 0) this.afterTriggerHooks.forEach(hook => hook({eventId, eventName, parentIdMap}));
+
+        if (count === 0) {
+            this.afterTriggerHooks.forEach(hook => hook({eventId, eventName, parentIdMap}));
+            return;
+        }
+        return promise;
     }
 
     removeEventListener(eventName, cb) {
@@ -82,6 +96,7 @@ class EventLog {
     cb = [];
     eventName;
     eventId;
+    callStackSizeCounter = 0;
 
     constructor(eventName, eventId) {
         this.eventName = eventName;
@@ -89,7 +104,7 @@ class EventLog {
     }
 
     logStack(stackNum, cb) {
-        let result = '--'.repeat(stackNum) + this.eventName + '\n'
+        let result = '--'.repeat(stackNum) + this.eventName + '-' + this.eventId + '\n'
             + this.cb.map(callBackLog => callBackLog.logStack(stackNum+1, cb)).join('');
 
         if (cb) cb(this.eventId);
@@ -99,6 +114,13 @@ class EventLog {
 
     log(cb) {
         return this.logStack(0, cb);
+    }
+
+    addCounter(num) {
+        this.callStackSizeCounter += num;
+        if (this.callStackSizeCounter > 100) {
+            throw new Error('Maximum call stack size(100) exceeded');
+        }
     }
 }
 
@@ -123,13 +145,20 @@ function logger() {
     let eventMap = {};
     return {
         beforeTrigger({eventId, eventName, parentIdMap}) {
-            eventMap[eventId] = new EventLog(eventName, eventId);
+            let eventLog = eventMap[eventId] = new EventLog(eventName, eventId);
 
             if (!parentIdMap) {
                 rootIdMap[eventId] = true;
             } else {
                 let { parentEventId, parentCbId } = parentIdMap;
-                eventMap[parentEventId].cb[parentCbId].event.push(eventMap[eventId]);
+
+                // 主流程已结束，按根事件处理
+                if (!eventMap[parentEventId]) {
+                    rootIdMap[eventId] = true;
+                } else {
+                    eventMap[parentEventId].cb[parentCbId].event.push(eventLog);
+                    eventLog.addCounter(eventMap[parentEventId].callStackSizeCounter + 1);
+                }
             }
         },
         beforeCallback({eventId, cbId, eventName, cb, parentIdMap}) {
@@ -139,6 +168,7 @@ function logger() {
         afterTrigger({eventId, eventName, parentIdMap}) {
             if (rootIdMap[eventId]) {
                 console.log(eventMap[eventId].log((eventId) => delete eventMap[eventId]));
+                // 防止内存溢出
                 delete rootIdMap[eventId];
             }
         }
@@ -160,16 +190,24 @@ bus.addEventListener('testEvent', async function callback1(){
     // do something
     await Promise.resolve();
     this.trigger('testEvent2')
-    this.trigger('testEvent2')
+    Promise.resolve().then(() => this.trigger('testEvent3'));
+    await this.trigger('testEvent')
 })
 bus.addEventListener('testEvent', function callback3(){
     // console.log('testEvent')
     // do something
     this.trigger('testEvent2')
+    this.trigger('testEvent2')
 })
 
 
 bus.addEventListener('testEvent2', function callback2(){
+    // console.log('testEvent2')
+    // do something
+})
+
+
+bus.addEventListener('testEvent3', async function callback4(){
     // console.log('testEvent2')
     // do something
 })
